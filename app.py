@@ -723,8 +723,9 @@ def _ns_tab(sel_date):
 
 def _bn_variant_row(cells, month_rates_cpb, periods):
     """¢/bu per period = bid − freight, but freight only exists for a period
-    whose label exactly matches one of BN's published months (mar/apr/may/
-    jj) — everything else is None (no roll, no guessing)."""
+    whose first named month falls in BN's currently-published rolling
+    window (whatever months that is right now) — everything else is None
+    (no roll, no guessing)."""
     row = []
     for p in periods:
         bid = cells.get(p, {}).get("bid")
@@ -763,6 +764,9 @@ def _bn_tab(sel_date):
         st.info("Select at least one destination to filter on.")
         return
     rows = FD.load_bn()
+    published_months = sorted({m for r in rows for spec in FD.BN_DESTINATIONS.values()
+                                for m in r[spec["field"] + "_cpb"]}, key=FD.bn_month_sort_key)
+    published_disp = "/".join(m.upper() if m == "jj" else m.title() for m in published_months)
 
     cells_by_dest, eff_by_dest = {}, {}
     for dest, spec in active:
@@ -793,8 +797,9 @@ def _bn_tab(sel_date):
         html.append(_card_close())
         st.markdown(''.join(html), unsafe_allow_html=True)
         st.caption("Best (highest) FOB among every origin in that state, per destination, per "
-                   "period — blue = the better destination for that state/period. Only "
-                   "periods matching a published freight month (Mar/Apr/May/JJ) show a value.")
+                   f"period — blue = the better destination for that state/period. Only "
+                   f"periods whose first named month is currently published ({published_disp}) "
+                   "show a value.")
 
     st.markdown("### BN Origins")
     if asof_bits:
@@ -805,12 +810,9 @@ def _bn_tab(sel_date):
         for r in rows:
             label_rows = [(dest, _bn_variant_row(cells_by_dest[dest], r[spec["field"] + "_cpb"], periods))
                           for dest, spec in active]
-            months = sorted({m for _, spec in active for m in r[spec["field"] + "_cpb"]},
-                            key=["mar", "apr", "may", "jj"].index)
-            months_disp = "/".join(m.upper() if m == "jj" else m.title() for m in months)
             html.append(
                 f'<tr class="origin-hdr"><td colspan="{ncols}">{r["state"]} · {r["origin"]}'
-                f'<span class="fut-sub"> &nbsp;freight published for {months_disp}</span></td></tr>'
+                f'<span class="fut-sub"> &nbsp;freight published for {published_disp}</span></td></tr>'
             )
             html.extend(_variant_value_rows(label_rows))
         html.append('</tbody></table>')
@@ -821,12 +823,13 @@ def _bn_tab(sel_date):
 
     st.markdown(
         '<div class="legend">FOB(origin) = bid at BN PNW/Hereford − rail freight (¢/bu = '
-        '$/car ÷ 4000 bu/car × 100). Unlike CSX/NS, BN publishes rates by delivery month '
-        '(Mar/Apr/May/JJ) rather than one flat number — a period nets against freight only '
-        'when its label matches one of those months exactly; everything else shows "—" '
-        'until a matching period is posted. All 11 BN origins are shown (the workbook has '
-        'no separate highlighted subset for this railroad). Blue = the better destination '
-        'for that origin/period.</div>',
+        '$/car ÷ 4000 bu/car × 100). Unlike CSX/NS, BN publishes rates for a rolling ~4-month '
+        f'window rather than one flat number — currently <b>{published_disp}</b> — a period '
+        'nets against freight only when its first named month falls in that window; '
+        'everything else shows "—" until the workbook rolls forward (re-run the extraction '
+        'against a freshly saved copy to pick up the new months). All 11 BN origins are '
+        'shown (the workbook has no separate highlighted subset for this railroad). Blue = '
+        'the better destination for that origin/period.</div>',
         unsafe_allow_html=True,
     )
 

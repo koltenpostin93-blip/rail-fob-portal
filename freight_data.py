@@ -20,6 +20,7 @@ its own $/bu sub-table: $/car ÷ 4000 reproduces it exactly). All convert to
 """
 import json
 import os
+import re
 
 _DIR = os.path.dirname(__file__)
 
@@ -44,24 +45,72 @@ NS_REGIONS = {
 }
 NS_BID_MARKET = "NS Ft Wayne"
 
-# BN publishes rates by delivery month (Mar/Apr/May/JJ) rather than one flat
-# number — a genuinely different shape from CSX/NS. Kolten's call
-# (2026-08-25): net each month's rate only against a bid period with the
-# EXACT matching label (case-insensitive) — most current postings (Aug, Sep,
-# Oct, JFM, OND, etc.) won't match any of these 4 and will show no freight
-# for BN until a bid period literally named e.g. "Mar" appears.
+# BN publishes rates by delivery month rather than one flat number — a
+# genuinely different shape from CSX/NS. The "Tarif + FSC + Cars" table is
+# just a ROLLING ~4-month-ahead window (Kolten, 2026-08-25: "all it is is
+# shows the 4 most nearby months") — its header months (and presumably the
+# underlying numbers) change whenever Kolten updates the workbook, so
+# `load_bn()` always reflects whatever's currently published rather than a
+# fixed set. Months outside that window have no published rate at all.
+#
+# A period nets against the freight for its FIRST named month (Kolten's
+# call): "Sep 25-Oct 5" -> Sep, "OCT-MAR" -> Oct, "LH OND" -> Oct (OND is a
+# package meaning Oct/Nov/Dec), "JFM" -> Jan (a package meaning Jan/Feb/Mar)
+# -> blank if Jan isn't in the current window. "IN TRANSIT"/"RETURN TRIP"
+# name no month at all -> blank. This mirrors rail_corridors.py's
+# package/month parsing conventions used elsewhere for CSX, but BN's own
+# period labels (LH OND, SEP 25-OCT 5, RETURN TRIP...) needed slightly more
+# tolerant parsing (a stripped qualifier prefix, packages matched mid-string)
+# so it's kept separate rather than importing that module's stricter version.
 BN_BU_PER_CAR = 4000
 BN_DESTINATIONS = {
     "PNW":      {"field": "pnw", "market": "BN PNW"},
     "Hereford": {"field": "hereford", "market": "BN Hereford"},
 }
 
+_BN_MONTH3 = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+              "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+_BN_MONTH3_REV = {v: k for k, v in _BN_MONTH3.items()}
+_BN_PACKAGES = {"jfm": 1, "fma": 2, "mam": 3, "amj": 4, "mjj": 5, "jja": 6,
+                 "jas": 7, "aso": 8, "son": 9, "ond": 10, "ndj": 11, "djf": 12,
+                 "amjj": 4, "am": 4, "jj": 6, "as": 8}
+
+
+def bn_period_first_month(period):
+    """First named calendar month (1-12) in a period label, or None if it
+    names no month at all (e.g. "In Transit", "Return Trip")."""
+    p = re.sub(r"^\s*(FH|LH|MP|SPLIT|FULL)\b\s*", "", period.strip(), flags=re.I).lower()
+    if p in _BN_PACKAGES:
+        return _BN_PACKAGES[p]
+    found = [(p.find(tok), m) for tok, m in _BN_MONTH3.items() if tok in p]
+    if not found:
+        return None
+    found.sort()
+    return found[0][1]
+
+
+def bn_month_sort_key(month_key):
+    """Calendar order for a seed-data month key (e.g. 'oct' -> 10), so
+    callers can list an origin's published months in the right order
+    regardless of which months are currently in the rolling window."""
+    return _BN_MONTH3.get(month_key, 99)
+
 
 def bn_freight_cpb(month_rates, period):
-    """month_rates: {'mar':.., 'apr':.., 'may':.., 'jj':..} in ¢/bu (already
-    converted). Returns the rate for `period` if its label exactly matches
-    (case-insensitive) one of those months, else None."""
-    return month_rates.get(period.strip().lower())
+    """month_rates: whatever months are CURRENTLY published, e.g.
+    {'aug':..,'sep':..,'oct':..,'nov':..} in ¢/bu (already converted) — the
+    exact set rolls over time. Returns the rate for `period`'s first named
+    month if that month is in the current window, else None. A legacy 'jj'
+    key (if ever present again) covers both Jun and Jul."""
+    m = bn_period_first_month(period)
+    if m is None:
+        return None
+    key = _BN_MONTH3_REV[m]
+    if key in month_rates:
+        return month_rates[key]
+    if m in (6, 7) and "jj" in month_rates:
+        return month_rates["jj"]
+    return None
 
 
 def _load(name):
@@ -93,10 +142,12 @@ def load_ns():
 
 def load_bn():
     """[{origin, state,
-         pnw: {mar,apr,may,jj},           <- $/car
-         hereford: {mar,apr,may,jj},      <- $/car
-         pnw_cpb: {mar,apr,may,jj},       <- ¢/bu
-         hereford_cpb: {mar,apr,may,jj}}] <- ¢/bu"""
+         pnw: {<current ~4 months>: $/car},
+         hereford: {<current ~4 months>: $/car},
+         pnw_cpb: {...same keys...: ¢/bu},
+         hereford_cpb: {...same keys...: ¢/bu}}]
+    The month keys are whatever's currently published — re-run the
+    extraction against a freshly saved workbook to roll them forward."""
     rows = _load("bn_freight_seed.json")
     for r in rows:
         for f in ("pnw", "hereford"):
