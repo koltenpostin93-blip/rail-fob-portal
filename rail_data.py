@@ -9,6 +9,11 @@ for rail bids.
 
 Configured via the BASIS_DATABASE_URL secret. When it isn't set, `configured()`
 returns False and the app shows a notice instead of raising.
+
+Works unmodified on either deployment target: Streamlit Community Cloud sets
+this as a plain env var (via st.secrets, bridged in app.py); Streamlit in
+Snowflake exposes it as a SECRETS-mapped name instead, read through the
+`_snowflake` module (only importable inside Snowflake's runtime).
 """
 import os
 
@@ -16,7 +21,14 @@ SOURCES = ("manual", "palmetto")
 
 
 def _url() -> str:
-    return os.environ.get("BASIS_DATABASE_URL", "").strip()
+    env_val = os.environ.get("BASIS_DATABASE_URL", "").strip()
+    if env_val:
+        return env_val
+    try:
+        import _snowflake
+        return (_snowflake.get_generic_secret_string("BASIS_DATABASE_URL") or "").strip()
+    except ImportError:
+        return ""   # not running inside Snowflake — no secret to fall back to
 
 
 def configured() -> bool:
