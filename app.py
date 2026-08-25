@@ -17,6 +17,7 @@ import os
 from collections import Counter
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import freight_data as FD
 import rail_data as RD
@@ -403,26 +404,39 @@ def _period_union(*cell_dicts):
     return sorted(keys, key=lambda p: keys[p])
 
 
+def _fob_cell_int(v, better=False):
+    if v is None:
+        return '<td>—</td>'
+    cls = ' class="better"' if better else ''
+    return f'<td{cls}>{round(v):+d}</td>'
+
+
+def _variant_value_rows(label_rows, cell_fn=_fob_cell, row_label_fn=lambda lbl: f'via {lbl}'):
+    """label_rows: [(label, [value_or_None per period]), ...] — one <tr> per
+    label. The best (max) value per period across ALL given rows is tinted
+    (via `cell_fn`'s `better` flag), so this one function drives both CSX's
+    2-way and NS's up-to-3-way comparisons, and the state-level rollups."""
+    rows_html = []
+    for i, (label, row) in enumerate(label_rows):
+        better = []
+        for pi in range(len(row)):
+            v = row[pi]
+            others = [label_rows[j][1][pi] for j in range(len(label_rows)) if j != i and label_rows[j][1][pi] is not None]
+            better.append(v is not None and bool(others) and all(v > o for o in others))
+        cells_html = ''.join(cell_fn(v, b) for v, b in zip(row, better))
+        rows_html.append(f'<tr><td class="sub-lbl">{row_label_fn(label)}</td>{cells_html}</tr>')
+    return rows_html
+
+
 def _fob_variant_rows(variants, periods):
     """variants: [(label, bid_cells_dict, freight_cpb), ...] — one row per
-    variant, ¢/bu = bid − freight. The best (max) value per period across all
-    given variants is tinted blue, so it works for CSX's 2-way and NS's up-to
-    -3-way comparisons alike."""
+    variant, ¢/bu = bid − freight."""
     vals = []
     for label, cells, frt in variants:
         row = [None if cells.get(p, {}).get("bid") is None else cells[p]["bid"] - frt
                for p in periods]
         vals.append((label, row))
-    rows_html = []
-    for i, (label, row) in enumerate(vals):
-        better = []
-        for pi in range(len(periods)):
-            v = row[pi]
-            others = [vals[j][1][pi] for j in range(len(vals)) if j != i and vals[j][1][pi] is not None]
-            better.append(v is not None and bool(others) and all(v > o for o in others))
-        cells_html = ''.join(_fob_cell(v, b) for v, b in zip(row, better))
-        rows_html.append(f'<tr><td class="sub-lbl">via {label}</td>{cells_html}</tr>')
-    return rows_html
+    return _variant_value_rows(vals)
 
 
 def _origin_table_open(periods, ncols):
@@ -484,41 +498,75 @@ def _raw_corridor_table(markets, sel_date):
     st.markdown(''.join(html), unsafe_allow_html=True)
 
 
-def _state_fob_table(rows, variant_fields, bid_cells_map, periods, state_key="state"):
-    """One row per state, one column per period, cell = the BEST (highest)
-    FOB among every origin in that state (across whichever corridors/regions
-    are active) — an index of each state's best netback, not tied to any
-    single origin."""
+def _state_best_row(origins, cells, field, periods):
+    """Best (highest) FOB among the given origins, for one corridor/region, per period."""
+    out = []
+    for p in periods:
+        bid = cells.get(p, {}).get("bid")
+        if bid is None:
+            out.append(None)
+            continue
+        best = None
+        for o in origins:
+            v = bid - o[field]
+            if best is None or v > best:
+                best = v
+        out.append(best)
+    return out
+
+
+def _state_fob_table(rows, variant_fields, bid_cells_map, periods, state_key="state",
+                      per_variant=False):
+    """One row per state, one column per period. Each cell is the BEST
+    (highest) FOB among every origin in that state for that corridor/region
+    — an index, not any single origin's actual number.
+
+    per_variant=False (NS's style): one combined row per state, best across
+    every active region — mirrors NS's Highlighted Origins, which already
+    collapses to a single best-region row per origin.
+    per_variant=True (CSX's style): one row per state PER active corridor
+    (e.g. "via Columbus" / "via Evansville"), the better one tinted — mirrors
+    CSX's Highlighted Origins, which compares corridors side by side."""
     if not variant_fields or not periods:
         st.caption("Select at least one corridor/region above to see this table.")
         return
     by_state = {}
     for r in rows:
-        s = r[state_key]
-        cur = by_state.setdefault(s, [None] * len(periods))
-        for i, p in enumerate(periods):
-            for label, field in variant_fields:
-                bid = bid_cells_map[label].get(p, {}).get("bid")
-                if bid is None:
-                    continue
-                v = bid - r[field]
-                if cur[i] is None or v > cur[i]:
-                    cur[i] = v
+        by_state.setdefault(r[state_key], []).append(r)
     if not by_state:
         st.caption("No data to index by state yet.")
         return
+
+    ncols = 1 + len(periods)
     html = [_card_open(), '<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
     html += [f'<th>{p}</th>' for p in periods]
     html.append('</tr>')
     for s in sorted(by_state):
-        vals = by_state[s]
-        cells = ''.join(f'<td>{round(v):+d}</td>' if v is not None else '<td>—</td>' for v in vals)
-        html.append(f'<tr><td class="lbl">{s}</td>{cells}</tr>')
+        origins = by_state[s]
+        if per_variant:
+            label_rows = [(label, _state_best_row(origins, bid_cells_map[label], field, periods))
+                          for label, field in variant_fields]
+            html.append(f'<tr class="origin-hdr"><td colspan="{ncols}">{s}</td></tr>')
+            html.extend(_variant_value_rows(label_rows, cell_fn=_fob_cell_int))
+        else:
+            vals = [None] * len(periods)
+            for label, field in variant_fields:
+                row = _state_best_row(origins, bid_cells_map[label], field, periods)
+                for i, v in enumerate(row):
+                    if v is not None and (vals[i] is None or v > vals[i]):
+                        vals[i] = v
+            cells = ''.join(f'<td>{round(v):+d}</td>' if v is not None else '<td>—</td>' for v in vals)
+            html.append(f'<tr><td class="lbl">{s}</td>{cells}</tr>')
     html.append('</tbody></table>')
     html.append(_card_close())
     st.markdown(''.join(html), unsafe_allow_html=True)
-    st.caption("Best (highest) FOB among every origin in that state, per period — "
-               "an index, not any single origin's actual number.")
+    if per_variant:
+        st.caption("Best (highest) FOB among every origin in that state, per corridor, per "
+                   "period — blue = the better corridor for that state/period, same "
+                   "comparison style as Highlighted Origins below.")
+    else:
+        st.caption("Best (highest) FOB among every origin in that state, per period — "
+                   "an index, not any single origin's actual number.")
 
 
 def _csx_tab(sel_date):
@@ -549,7 +597,7 @@ def _csx_tab(sel_date):
     variant_fields = ([("Columbus", "columbus_cpb")] if show_col else []) + \
                       ([("Evansville", "eville_altkyla_cpb")] if show_evv else [])
     bid_cells_map = {"Columbus": col_cells, "Evansville": evv_cells}
-    _state_fob_table(rows, variant_fields, bid_cells_map, periods)
+    _state_fob_table(rows, variant_fields, bid_cells_map, periods, per_variant=True)
 
     st.markdown("### Highlighted Origins")
     if asof_bits:
@@ -673,6 +721,116 @@ def _ns_tab(sel_date):
     )
 
 
+def _bn_variant_row(cells, month_rates_cpb, periods):
+    """¢/bu per period = bid − freight, but freight only exists for a period
+    whose label exactly matches one of BN's published months (mar/apr/may/
+    jj) — everything else is None (no roll, no guessing)."""
+    row = []
+    for p in periods:
+        bid = cells.get(p, {}).get("bid")
+        frt = FD.bn_freight_cpb(month_rates_cpb, p)
+        row.append(None if bid is None or frt is None else bid - frt)
+    return row
+
+
+def _bn_state_best_row(origins, cells, field, periods):
+    out = []
+    for p in periods:
+        bid = cells.get(p, {}).get("bid")
+        if bid is None:
+            out.append(None)
+            continue
+        best = None
+        for o in origins:
+            frt = FD.bn_freight_cpb(o[field], p)
+            if frt is None:
+                continue
+            v = bid - frt
+            if best is None or v > best:
+                best = v
+        out.append(best)
+    return out
+
+
+def _bn_tab(sel_date):
+    st.caption(f"Posting date **{sel_date}** — change it on the 📋 Bids tab.")
+    fc, fe = st.columns(2)
+    show = {}
+    for (dest, spec), c in zip(FD.BN_DESTINATIONS.items(), (fc, fe)):
+        show[dest] = c.checkbox(dest, value=True, key=f"bn_f_{spec['field']}")
+    active = [(dest, spec) for dest, spec in FD.BN_DESTINATIONS.items() if show[dest]]
+    if not active:
+        st.info("Select at least one destination to filter on.")
+        return
+    rows = FD.load_bn()
+
+    cells_by_dest, eff_by_dest = {}, {}
+    for dest, spec in active:
+        cells_by_dest[dest], eff_by_dest[dest] = _bid_cells_for("manual", spec["market"], sel_date)
+    periods = _period_union(*cells_by_dest.values())
+    asof_bits = [f"{dest} as of {eff_by_dest[dest]}" for dest, _ in active
+                 if eff_by_dest[dest] and eff_by_dest[dest] != sel_date]
+
+    st.markdown("### Rail FOB — BN")
+    _raw_corridor_table([spec["market"] for _, spec in active], sel_date)
+
+    st.markdown("### FOB Index by State")
+    if periods:
+        by_state = {}
+        for r in rows:
+            by_state.setdefault(r["state"], []).append(r)
+        ncols = 1 + len(periods)
+        html = [_card_open(), '<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
+        html += [f'<th>{p}</th>' for p in periods]
+        html.append('</tr>')
+        for s in sorted(by_state):
+            origins = by_state[s]
+            label_rows = [(dest, _bn_state_best_row(origins, cells_by_dest[dest], spec["field"] + "_cpb", periods))
+                          for dest, spec in active]
+            html.append(f'<tr class="origin-hdr"><td colspan="{ncols}">{s}</td></tr>')
+            html.extend(_variant_value_rows(label_rows, cell_fn=_fob_cell_int))
+        html.append('</tbody></table>')
+        html.append(_card_close())
+        st.markdown(''.join(html), unsafe_allow_html=True)
+        st.caption("Best (highest) FOB among every origin in that state, per destination, per "
+                   "period — blue = the better destination for that state/period. Only "
+                   "periods matching a published freight month (Mar/Apr/May/JJ) show a value.")
+
+    st.markdown("### BN Origins")
+    if asof_bits:
+        st.caption(" · ".join(asof_bits))
+    if periods:
+        ncols = 1 + len(periods)
+        html = [_card_open()] + _origin_table_open(periods, ncols)
+        for r in rows:
+            label_rows = [(dest, _bn_variant_row(cells_by_dest[dest], r[spec["field"] + "_cpb"], periods))
+                          for dest, spec in active]
+            months = sorted({m for _, spec in active for m in r[spec["field"] + "_cpb"]},
+                            key=["mar", "apr", "may", "jj"].index)
+            months_disp = "/".join(m.upper() if m == "jj" else m.title() for m in months)
+            html.append(
+                f'<tr class="origin-hdr"><td colspan="{ncols}">{r["state"]} · {r["origin"]}'
+                f'<span class="fut-sub"> &nbsp;freight published for {months_disp}</span></td></tr>'
+            )
+            html.extend(_variant_value_rows(label_rows))
+        html.append('</tbody></table>')
+        html.append(_card_close())
+        st.markdown(''.join(html), unsafe_allow_html=True)
+    else:
+        st.caption("No BN PNW/Hereford postings on or before this date yet.")
+
+    st.markdown(
+        '<div class="legend">FOB(origin) = bid at BN PNW/Hereford − rail freight (¢/bu = '
+        '$/car ÷ 4000 bu/car × 100). Unlike CSX/NS, BN publishes rates by delivery month '
+        '(Mar/Apr/May/JJ) rather than one flat number — a period nets against freight only '
+        'when its label matches one of those months exactly; everything else shows "—" '
+        'until a matching period is posted. All 11 BN origins are shown (the workbook has '
+        'no separate highlighted subset for this railroad). Blue = the better destination '
+        'for that origin/period.</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _expanded_freight_table(rows, state_key, label_cols, variants):
     """Sortable reference table: one row per origin, one column per active
     freight variant (¢/bu), ranked cheapest-first across whichever variants
@@ -707,7 +865,51 @@ def _expanded_freight_table(rows, state_key, label_cols, variants):
     st.caption(f"{len(ordered)} locations, ranked cheapest freight first.")
 
 
-bids_tab, csx_tab, ns_tab = st.tabs(["📋 Bids", "🚂 CSX", "🚂 NS"])
+REFERENCES = [
+    ("CN GeoMapGuide — interactive rail network map", "https://cnebusiness.geomapguide.ca/"),
+    ("NS Grain Customer Directory", "http://www.nscorp.com/content/nscorp/en/shipping-options/agriculture-and-forest-products/grain-customer-directory.html"),
+    ("CSX Publications & Tariffs", "https://www.csx.com/index.cfm/customers/publications-tariffs/"),
+    ("UP Shuttle Train Programs", "https://www.up.com/customers/bulk/shuttle/index.htm"),
+    ("BNSF Grain Shuttle Facilities", "http://www.bnsf.com/customers/grain-facilities/shuttles/"),
+    ("Rail Rate Checker — Useful Railroad Links", "https://www.railratechecker.com/Useful%20Railroad%20Links.html"),
+    ("USDA AgTransport — Grain Rail Cars Loaded and Billed",
+     "https://agtransport.usda.gov/Rail/Grain-Rail-Cars-Loaded-and-Billed/27k8-utc2/explore/query/"
+     "SELECT%0A%20%20%60date%60%2C%0A%20%20%60week%60%2C%0A%20%20%60month%60%2C%0A%20%20%60year%60%2C%0A"
+     "%20%20%60railroad%60%2C%0A%20%20%60state%60%2C%0A%20%20%60all%60%2C%0A%20%20%60dedicated_or_shuttle%60"
+     "%2C%0A%20%20%60other%60%2C%0A%20%20%60state_point%60%0AORDER%20BY%20%60date%60%20DESC%20NULL%20FIRST/page/filter"),
+]
+
+
+def _map_tab():
+    st.markdown("### CN Rail Network Map")
+    st.caption("Live embed of CN's GeoMapGuide. If it doesn't load (some networks block "
+               "third-party embeds), use the link below to open it directly.")
+    components.iframe("https://cnebusiness.geomapguide.ca/", height=750, scrolling=True)
+    st.markdown(
+        '<div style="margin-top:8px">'
+        '<a href="https://cnebusiness.geomapguide.ca/" target="_blank" '
+        'style="color:#0693e3;font-weight:600">Open CN GeoMapGuide in a new tab ↗</a>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _references_tab():
+    st.markdown("### Reference Links")
+    html = [_card_open(), '<table class="sheet"><tbody>']
+    for label, url in REFERENCES:
+        html.append(
+            f'<tr><td class="lbl" style="white-space:normal">'
+            f'<a href="{url}" target="_blank" style="color:#0693e3;font-weight:600">{label}</a>'
+            f'<br><span class="fut-sub">{url}</span></td></tr>'
+        )
+    html.append('</tbody></table>')
+    html.append(_card_close())
+    st.markdown(''.join(html), unsafe_allow_html=True)
+
+
+bids_tab, csx_tab, ns_tab, bn_tab, map_tab, refs_tab = st.tabs(
+    ["📋 Bids", "🚂 CSX", "🚂 NS", "🚂 BN", "🗺️ Map", "🔗 References"])
 
 with bids_tab:
     st.markdown("### Manual Rail Corridors (chat-fed)")
@@ -718,3 +920,12 @@ with csx_tab:
 
 with ns_tab:
     _ns_tab(_manual_date)
+
+with bn_tab:
+    _bn_tab(_manual_date)
+
+with map_tab:
+    _map_tab()
+
+with refs_tab:
+    _references_tab()
