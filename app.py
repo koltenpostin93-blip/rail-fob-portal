@@ -23,6 +23,7 @@ import streamlit.components.v1 as components
 
 import freight_data as FD
 import rail_data as RD
+import river_data as RVD
 from rail_corridors import MANUAL_SECTIONS, RAIL_DISPLAY, RAIL_COLORS
 
 # Local .env, optional (Streamlit Cloud uses st.secrets instead).
@@ -33,8 +34,9 @@ except ModuleNotFoundError:
     pass
 
 try:
-    if "BASIS_DATABASE_URL" in st.secrets and not os.environ.get("BASIS_DATABASE_URL"):
-        os.environ["BASIS_DATABASE_URL"] = st.secrets["BASIS_DATABASE_URL"]
+    for _secret_key in ("BASIS_DATABASE_URL", "RIVER_DATABASE_URL"):
+        if _secret_key in st.secrets and not os.environ.get(_secret_key):
+            os.environ[_secret_key] = st.secrets[_secret_key]
 except Exception:
     pass  # st.secrets unavailable locally — fine, .env covers it
 
@@ -49,15 +51,20 @@ st.set_page_config(
 @st.cache_data
 def _asset_uri(filename):
     p = os.path.join(os.path.dirname(__file__), "assets", filename)
+    mime = "image/svg+xml" if filename.endswith(".svg") else "image/png"
     try:
         with open(p, "rb") as f:
-            return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+            return f"data:{mime};base64," + base64.b64encode(f.read()).decode()
     except OSError:
         return ""
 
 
 WATERMARK = _asset_uri("jsa_50yr.png")
 LOGO_URI = _asset_uri("logo-full.png")
+CSX_LOGO_URI = _asset_uri("csx_logo.svg")
+NS_LOGO_URI = _asset_uri("ns_logo.svg")
+BNSF_LOGO_URI = _asset_uri("bnsf_logo.svg")
+CN_LOGO_URI = _asset_uri("cn_logo.svg")
 
 JPSI_DARK = "#32373c"
 JPSI_BLUE = "#0693e3"
@@ -186,6 +193,28 @@ st.markdown(
         color: #000000 !important; -webkit-text-fill-color: #000000 !important; font-weight: 800 !important;
       }}
       .stTabs [data-baseweb="tab-panel"] {{ padding-top: 10px !important; }}
+
+      /* Railroad logos on their tabs, in place of a generic emoji. Streamlit's
+         st.tabs() only takes plain text, so this positions each carrier's mark
+         via nth-of-type — must stay in sync with the literal tab order below
+         (Bids, CSX, NS, BN, CN, Map, References). */
+      [role="tab"] p {{ display: flex; align-items: center; gap: 6px; }}
+      [role="tab"]:nth-of-type(2) p::before {{
+        content: ""; display: inline-block; width: 26px; height: 16px;
+        background: url('{CSX_LOGO_URI}') no-repeat center / contain;
+      }}
+      [role="tab"]:nth-of-type(3) p::before {{
+        content: ""; display: inline-block; width: 26px; height: 16px;
+        background: url('{NS_LOGO_URI}') no-repeat center / contain;
+      }}
+      [role="tab"]:nth-of-type(4) p::before {{
+        content: ""; display: inline-block; width: 26px; height: 16px;
+        background: url('{BNSF_LOGO_URI}') no-repeat center / contain;
+      }}
+      [role="tab"]:nth-of-type(5) p::before {{
+        content: ""; display: inline-block; width: 26px; height: 16px;
+        background: url('{CN_LOGO_URI}') no-repeat center / contain;
+      }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -1001,10 +1030,10 @@ _CN_LETTER = {v: k[-1].upper() for k, v in FD.CN_RATE_FIELD.items()}
 
 
 def _cn_tab():
-    st.caption("Raw CN Gulf Export tariff rates (Supplement 41 to Tariff CN 004050-A8) — "
-               "reference only for now. No ¢/bu conversion or FOB calc yet — Kolten's still "
-               "working out the basis side, which will reference Corn CIF NOLA from the "
-               "River FOB Portal rather than a rail_fob bid market.")
+    st.caption("Raw CN Gulf Export tariff rates (Supplement 41 to Tariff CN 004050-A8), plus "
+               "a corn FOB netback against Corn CIF NOLA from the River FOB Portal — CN's "
+               "freight doesn't net against a rail_fob bid market like CSX/NS/BN do, since "
+               "this corridor is entirely about moving grain to the Gulf for export.")
 
     sc, pc = st.columns(2)
     with sc:
@@ -1057,6 +1086,44 @@ def _cn_tab():
         st.markdown(
             "  \n".join(f"**{k}** — {v}" for k, v in FD.CN_NOTES.items())
         )
+
+    st.markdown("### Corn FOB by Origin")
+    if not RVD.configured():
+        st.info("RIVER_DATABASE_URL isn't set, so this can't reach the River FOB Portal's "
+                 "Corn CIF NOLA archive yet. Add it to `.env` locally or as a Streamlit secret.")
+        return
+    as_of, cif = RVD.latest_corn_cif()
+    if not as_of or not cif:
+        st.caption("No Corn CIF NOLA history found in the River FOB Portal's archive yet.")
+        return
+    months = sorted(cif, key=RVD.month_sort_key)
+
+    ncols = 1 + len(months)
+    html = _origin_table_open(months, ncols)
+    for r in filtered:
+        variants = [(f"{size} · {source}", r[f"{field}_cpb"]) for size, source, field in active_cols]
+        label_rows = [(lbl, [None if cif.get(m) is None else cif[m] - frt for m in months])
+                      for lbl, frt in variants]
+        html.append(
+            f'<tr class="origin-hdr"><td colspan="{ncols}">{r["state"]} · {r["origin"]}'
+            f'<span class="fut-sub"> &nbsp;{r["notes"] or ""}</span></td></tr>'
+        )
+        html.extend(_variant_value_rows(label_rows))
+    html.append('</tbody></table>')
+    table_html = ''.join(html)
+    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+    _table_actions(table_html, "cn_fob.png")
+    st.markdown(
+        f'<div class="legend">FOB(origin) = Corn CIF NOLA (as of {as_of}, River FOB Portal) '
+        '− rail freight (¢/bu = $/car ÷ bu/car). Bu/car is by car SIZE only — '
+        f'{FD.CN_BU_PER_CAR["Small"]:,} bu for Small (≤5149 ft³), '
+        f'{FD.CN_BU_PER_CAR["Large"]:,} bu for Large (>5149 ft³) — from weight-based hopper-car '
+        'capacity (a 100-ton and a 110-ton car\'s net payload ÷ 56 lb/bu corn); railroad- vs '
+        'private-supplied doesn\'t change how many bushels physically fit. One column per CIF '
+        'delivery month currently archived; blue = the better car size/source for that '
+        'origin/month.</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _expanded_freight_table(rows, state_key, label_cols, variants, name="all_origins"):
@@ -1139,7 +1206,7 @@ def _references_tab():
 
 
 bids_tab, csx_tab, ns_tab, bn_tab, cn_tab, map_tab, refs_tab = st.tabs(
-    ["📋 Bids", "🚂 CSX", "🚂 NS", "🚂 BN", "🚂 CN", "🗺️ Map", "🔗 References"])
+    ["📋 Bids", "CSX", "NS", "BN", "CN", "🗺️ Map", "🔗 References"])
 
 with bids_tab:
     st.markdown("### Manual Rail Corridors (chat-fed)")

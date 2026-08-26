@@ -194,7 +194,22 @@ CN_RATE_FIELD = {
 
 
 def load_cn():
-    """[{origin, state, destination, rate_a, rate_b, rate_c, rate_d, notes}]
-    All in $/car, exactly as published in the tariff — no ¢/bu conversion
-    yet (no confirmed bu/car figure for CN), no FOB calc."""
-    return _load("cn_freight_seed.json")
+    """[{origin, state, destination, rate_a, rate_b, rate_c, rate_d, notes,
+         rate_a_cpb, rate_b_cpb, rate_c_cpb, rate_d_cpb}]
+    a/c fields are $/car and ¢/bu for Small cars, b/d for Large — see
+    CN_BU_PER_CAR below for the bushel figures behind the conversion."""
+    rows = _load("cn_freight_seed.json")
+    for r in rows:
+        for (size, _source), field in CN_RATE_FIELD.items():
+            r[f"{field}_cpb"] = r[field] / CN_BU_PER_CAR[size] * 100
+    return rows
+
+
+# Bushels/car for CN's two size classes, confirmed with Kolten (2026-08-26):
+# weight-based hopper-car capacity (Soy Transportation Coalition — 100-ton/
+# 4750 ft³ and 110-ton/5750 ft³ reference cars, net payload ÷ corn's 56 lb/bu)
+# rather than a naive volumetric conversion, since grain shipments are
+# weight-limited, not volume-limited. Depends only on car SIZE — a
+# railroad-supplied vs private car of the same size class holds the same
+# number of bushels, the ownership doesn't change the car's capacity.
+CN_BU_PER_CAR = {"Small": 3570, "Large": 3930}
