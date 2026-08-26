@@ -1031,11 +1031,11 @@ _CN_LETTER = {v: k[-1].upper() for k, v in FD.CN_RATE_FIELD.items()}
 
 def _cn_tab():
     st.caption("Raw CN Gulf Export tariff rates (Supplement 41 to Tariff CN 004050-A8), plus "
-               "a corn FOB netback against Corn CIF NOLA from the River FOB Portal — CN's "
-               "freight doesn't net against a rail_fob bid market like CSX/NS/BN do, since "
-               "this corridor is entirely about moving grain to the Gulf for export.")
+               "a FOB netback against CIF NOLA from the River FOB Portal — CN's freight "
+               "doesn't net against a rail_fob bid market like CSX/NS/BN do, since this "
+               "corridor is entirely about moving grain to the Gulf for export.")
 
-    sc, pc = st.columns(2)
+    sc, pc, cc = st.columns(3)
     with sc:
         st.caption("Car size")
         sizes = [s for s in FD.CN_SIZES if st.checkbox(f"{s} ({FD.CN_SIZES[s]})", value=True,
@@ -1044,6 +1044,10 @@ def _cn_tab():
         st.caption("Car source")
         sources = [s for s in FD.CN_SOURCES if st.checkbox(f"{s} ({FD.CN_SOURCES[s]})", value=True,
                                                               key=f"cn_src_{s}")]
+    with cc:
+        st.caption("Commodity")
+        commodity = st.radio("Commodity", FD.CN_COMMODITIES, key="cn_commodity",
+                              label_visibility="collapsed")
     active_cols = [(size, source, FD.CN_RATE_FIELD[(size, source)])
                    for size in sizes for source in sources]
     if not active_cols:
@@ -1068,11 +1072,12 @@ def _cn_tab():
     html += [f'<th>{size}<br><span class="fut-sub">{source}</span></th>' for size, source, _ in active_cols]
     html.append('</tr>')
 
-    def _rate_cell(r, field):
+    def _rate_cell(r, size, field):
         v = r[field]
         letter = _CN_LETTER[field]
         mark = ' <span class="fut-sub">(C)</span>' if letter.lower() in (r.get("changed") or ()) else ''
-        return f'<td>{v:,.0f}{mark}</td>'
+        cpb = FD.cn_freight_cpb(v, size, commodity)
+        return f'<td>{v:,.0f}{mark}<br><span class="fut-sub">{cpb:.1f}¢/bu</span></td>'
 
     for r in filtered:
         switch_mark = ' <span class="fut-sub">⇄ recip. switch</span>' if r["switch"] else ''
@@ -1080,39 +1085,41 @@ def _cn_tab():
             f'<tr><td class="lbl">{r["state"]}</td><td class="lbl">{r["origin"]}</td>'
             f'<td class="lbl">{r["tier"] or r["notes"] or ""}'
             f'<span class="fut-sub"> ({r["notes"] or "—"})</span>{switch_mark}</td>'
-            + ''.join(_rate_cell(r, field) for _, _, field in active_cols)
+            + ''.join(_rate_cell(r, size, field) for size, _, field in active_cols)
             + '</tr>'
         )
     html.append('</tbody></table>')
     table_html = ''.join(html)
     st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
     _table_actions(table_html, "cn_rates.png")
-    st.caption(f"{len(filtered)} of {len(rows)} rate rows shown ($/car). All rows currently "
+    st.caption(f"{len(filtered)} of {len(rows)} rate rows shown (\\$/car, with the {commodity.lower()} "
+               f"¢/bu equivalent below each — {FD.CN_LB_PER_BU[commodity]} lb/bu). All rows currently "
                "go to Gulf Exports Group — multiple rows per origin are different volume "
                "tiers, not different destinations. (C) = tariff-flagged as recently changed. "
                "⇄ recip. switch = this rate includes a reciprocal switch at origin (up to "
-               "$139/car) — most rows exclude it, this just flags the ones that don't.")
+               "\\$139/car) — most rows exclude it, this just flags the ones that don't.")
 
     with st.expander("Note codes"):
         st.markdown(
             "  \n".join(f"**{k}** — {v}" for k, v in FD.CN_NOTES.items())
         )
 
-    st.markdown("### Corn FOB by Origin")
+    st.markdown(f"### {commodity} FOB by Origin")
     if not RVD.configured():
         st.info("RIVER_DATABASE_URL isn't set, so this can't reach the River FOB Portal's "
-                 "Corn CIF NOLA archive yet. Add it to `.env` locally or as a Streamlit secret.")
+                 "CIF NOLA archive yet. Add it to `.env` locally or as a Streamlit secret.")
         return
-    as_of, cif = RVD.latest_corn_cif()
+    as_of, cif = RVD.latest_cif(commodity)
     if not as_of or not cif:
-        st.caption("No Corn CIF NOLA history found in the River FOB Portal's archive yet.")
+        st.caption(f"No {commodity} CIF NOLA history found in the River FOB Portal's archive yet.")
         return
     months = sorted(cif, key=RVD.month_sort_key)
 
     ncols = 1 + len(months)
     html = _origin_table_open(months, ncols)
     for r in filtered:
-        variants = [(f"{size} · {source}", r[f"{field}_cpb"]) for size, source, field in active_cols]
+        variants = [(f"{size} · {source}", FD.cn_freight_cpb(r[field], size, commodity))
+                    for size, source, field in active_cols]
         label_rows = [(lbl, [None if cif.get(m) is None else cif[m] - frt for m in months])
                       for lbl, frt in variants]
         switch_mark = ' <span class="fut-sub">⇄ recip. switch</span>' if r["switch"] else ''
@@ -1125,15 +1132,16 @@ def _cn_tab():
     table_html = ''.join(html)
     st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
     _table_actions(table_html, "cn_fob.png")
+    bpc = FD.CN_BU_PER_CAR[commodity]
+    soy_note = (' (derived from the same car\'s weight capacity as corn, ÷60 lb/bu instead of 56)'
+                if commodity == "Soybeans" else '')
     st.markdown(
-        f'<div class="legend">FOB(origin) = Corn CIF NOLA (as of {as_of}, River FOB Portal) '
-        '− rail freight (¢/bu = $/car ÷ bu/car). Bu/car is by car SIZE only — '
-        f'{FD.CN_BU_PER_CAR["Small"]:,} bu for Small (≤5149 ft³), '
-        f'{FD.CN_BU_PER_CAR["Large"]:,} bu for Large (>5149 ft³) — from weight-based hopper-car '
-        'capacity (a 100-ton and a 110-ton car\'s net payload ÷ 56 lb/bu corn); railroad- vs '
-        'private-supplied doesn\'t change how many bushels physically fit. One column per CIF '
-        'delivery month currently archived; blue = the better car size/source for that '
-        'origin/month.</div>',
+        f'<div class="legend">FOB(origin) = {commodity} CIF NOLA (as of {as_of}, River FOB '
+        'Portal) − rail freight (¢/bu = $/car ÷ bu/car). Bu/car is by car SIZE only — '
+        f'{bpc["Small"]:,} bu for Small (≤5149 ft³), {bpc["Large"]:,} bu for Large '
+        f'(>5149 ft³){soy_note} — railroad- vs private-supplied doesn\'t change how many '
+        'bushels physically fit. One column per CIF delivery month currently archived; blue = '
+        'the better car size/source for that origin/month.</div>',
         unsafe_allow_html=True,
     )
 

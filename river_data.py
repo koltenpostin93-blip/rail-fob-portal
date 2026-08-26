@@ -1,8 +1,8 @@
 """
-Read-only access to the River FOB Portal's Corn CIF NOLA curve.
+Read-only access to the River FOB Portal's CIF NOLA curves (Corn, Soybeans).
 
 CN's Gulf Export freight doesn't net against a rail_fob bid market like
-CSX/NS/BN do — Kolten's call (2026-08-26): net it against Corn CIF NOLA from
+CSX/NS/BN do — Kolten's call (2026-08-26): net it against CIF NOLA from
 the River FOB Portal instead, since CN's whole business here is moving grain
 to the Gulf for export, same as the barge/river network CIF represents.
 
@@ -44,20 +44,22 @@ def month_sort_key(label):
         return 99
 
 
-def latest_corn_cif():
-    """The most recently archived date's Corn CIF NOLA curve.
+def latest_cif(commodity="Corn"):
+    """The most recently archived date's CIF NOLA curve for a commodity
+    ("Corn" or "Soybeans", matching the River FOB Portal's own M.COMMODITIES
+    spelling).
     -> (as_of_date_str_or_None, {month_label: cents_per_bu}), months ordered
     by _MONTH_ORDER when iterated via sorted(..., key=month_sort_key)."""
     conn = _conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT MAX(as_of) AS d FROM cif_history WHERE commodity=%s", ("Corn",))
+        cur.execute("SELECT MAX(as_of) AS d FROM cif_history WHERE commodity=%s", (commodity,))
         row = cur.fetchone()
         as_of = row["d"] if row else None
         if not as_of:
             return None, {}
         cur.execute("SELECT month, value FROM cif_history WHERE commodity=%s AND as_of=%s",
-                    ("Corn", as_of))
+                    (commodity, as_of))
         cif = {r["month"]: r["value"] * 100 for r in cur.fetchall() if r["value"] is not None}
         return as_of, cif
     finally:
