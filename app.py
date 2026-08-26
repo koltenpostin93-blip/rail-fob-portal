@@ -721,6 +721,73 @@ def _ns_tab(sel_date):
     )
 
 
+_BN_TARGET_MONTHS = ("Aug", "Sep", "Oct", "Nov")
+
+
+def _bn_sibling_bid(cells, *labels):
+    """First matching period's bid among the given exact labels
+    (case-insensitive) — None if that period isn't posted or has no bid."""
+    by_lower = {p.lower(): c for p, c in cells.items()}
+    for lbl in labels:
+        c = by_lower.get(lbl.lower())
+        if c and c.get("bid") is not None:
+            return c["bid"]
+    return None
+
+
+def _bn_infer_month_bid(cells, month):
+    """Best-effort bid for one of Aug/Sep/Oct/Nov when it wasn't posted as
+    its own literal period that day, from whatever partial pieces WERE
+    posted (Kolten's call, 2026-08-26 — only bother for these 4 "big"
+    months, not every smaller package). Display-only for FOB purposes —
+    never writes back to the archive, and the raw Rail FOB grid still shows
+    only what was literally posted. Tries, in order:
+      1. FH/LH <month> averaged (or whichever one exists, if only one does)
+      2. Split <month>, treated the same as a literal posting
+      3. for Oct/Nov only: the OND package (Oct/Nov/Dec combined) — used
+         directly for Oct, or reverse-averaged against Oct for Nov
+         (assuming OND = (Oct+Nov+Dec)/3 and Nov≈Dec) when Oct is otherwise
+         known; a straight OND substitution if Oct isn't known either."""
+    direct = _bn_sibling_bid(cells, month)
+    if direct is not None:
+        return direct
+    fh = _bn_sibling_bid(cells, f"FH {month}")
+    lh = _bn_sibling_bid(cells, f"LH {month}")
+    if fh is not None and lh is not None:
+        return (fh + lh) / 2
+    if fh is not None:
+        return fh
+    if lh is not None:
+        return lh
+    split = _bn_sibling_bid(cells, f"Split {month}")
+    if split is not None:
+        return split
+    if month in ("Oct", "Nov"):
+        ond = _bn_sibling_bid(cells, "OND", "LH OND", "FH OND")
+        if ond is not None:
+            if month == "Oct":
+                return ond
+            oct_val = _bn_infer_month_bid(cells, "Oct")
+            if oct_val is not None and oct_val != ond:
+                return (3 * ond - oct_val) / 2
+            return ond
+    return None
+
+
+def _bn_effective_bid(cells, period):
+    """The literal bid if posted, else a best-effort inferred value — but
+    only for the 4 target months (Aug/Sep/Oct/Nov); every other period
+    (FH Sep, Split Nov, OND, JFM, ...) stays exactly as posted, blank if
+    it wasn't."""
+    direct = cells.get(period, {}).get("bid")
+    if direct is not None:
+        return direct
+    p = period.strip()
+    if p.title() in _BN_TARGET_MONTHS:
+        return _bn_infer_month_bid(cells, p.title())
+    return None
+
+
 def _bn_variant_row(cells, month_rates_cpb, periods):
     """¢/bu per period = bid − freight, but freight only exists for a period
     whose first named month falls in BN's currently-published rolling
@@ -728,7 +795,7 @@ def _bn_variant_row(cells, month_rates_cpb, periods):
     (no roll, no guessing)."""
     row = []
     for p in periods:
-        bid = cells.get(p, {}).get("bid")
+        bid = _bn_effective_bid(cells, p)
         frt = FD.bn_freight_cpb(month_rates_cpb, p)
         row.append(None if bid is None or frt is None else bid - frt)
     return row
@@ -737,7 +804,7 @@ def _bn_variant_row(cells, month_rates_cpb, periods):
 def _bn_state_best_row(origins, cells, field, periods):
     out = []
     for p in periods:
-        bid = cells.get(p, {}).get("bid")
+        bid = _bn_effective_bid(cells, p)
         if bid is None:
             out.append(None)
             continue
@@ -827,7 +894,12 @@ def _bn_tab(sel_date):
         f'window rather than one flat number — currently <b>{published_disp}</b> — a period '
         'nets against freight only when its first named month falls in that window; '
         'everything else shows "—" until the workbook rolls forward (re-run the extraction '
-        'against a freshly saved copy to pick up the new months). All 11 BN origins are '
+        'against a freshly saved copy to pick up the new months). For the Aug/Sep/Oct/Nov '
+        'columns specifically, a bid not posted that literal day is filled in best-effort '
+        'from whatever partial pieces WERE posted — FH+LH averaged, a Split-month quote used '
+        'directly, or (for Oct/Nov) the OND package, reverse-averaged against Oct when Oct is '
+        'known — before falling back to "—"; every other, smaller period (FH Sep, Split Nov, '
+        'OND itself, JFM, ...) is shown exactly as posted, no inference. All 11 BN origins are '
         'shown (the workbook has no separate highlighted subset for this railroad). Blue = '
         'the better destination for that origin/period.</div>',
         unsafe_allow_html=True,
