@@ -846,17 +846,18 @@ def _bn_tab(sel_date):
     _raw_corridor_table([spec["market"] for _, spec in active], sel_date)
 
     st.markdown("### FOB Index by State")
-    if periods:
+    index_periods = list(_BN_TARGET_MONTHS)
+    if any(cells_by_dest.values()):
         by_state = {}
         for r in rows:
             by_state.setdefault(r["state"], []).append(r)
-        ncols = 1 + len(periods)
+        ncols = 1 + len(index_periods)
         html = [_card_open(), '<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
-        html += [f'<th>{p}</th>' for p in periods]
+        html += [f'<th>{p}</th>' for p in index_periods]
         html.append('</tr>')
         for s in sorted(by_state):
             origins = by_state[s]
-            label_rows = [(dest, _bn_state_best_row(origins, cells_by_dest[dest], spec["field"] + "_cpb", periods))
+            label_rows = [(dest, _bn_state_best_row(origins, cells_by_dest[dest], spec["field"] + "_cpb", index_periods))
                           for dest, spec in active]
             html.append(f'<tr class="origin-hdr"><td colspan="{ncols}">{s}</td></tr>')
             html.extend(_variant_value_rows(label_rows, cell_fn=_fob_cell_int))
@@ -864,9 +865,11 @@ def _bn_tab(sel_date):
         html.append(_card_close())
         st.markdown(''.join(html), unsafe_allow_html=True)
         st.caption("Best (highest) FOB among every origin in that state, per destination, per "
-                   f"period — blue = the better destination for that state/period. Only "
-                   f"periods whose first named month is currently published ({published_disp}) "
-                   "show a value.")
+                   "one of the 4 clean months — FH/LH splits and packages (Split Nov, OND, "
+                   "etc.) are folded into these columns rather than listed separately (see "
+                   "the Rail FOB and BN Origins tables above/below for every period exactly "
+                   f"as posted). Blue = the better destination. Only periods whose first "
+                   f"named month is currently published ({published_disp}) show a value.")
 
     st.markdown("### BN Origins")
     if asof_bits:
