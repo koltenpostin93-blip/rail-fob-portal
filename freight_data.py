@@ -153,3 +153,48 @@ def load_bn():
         for f in ("pnw", "hereford"):
             r[f"{f}_cpb"] = {m: v / BN_BU_PER_CAR * 100 for m, v in r[f].items()}
     return rows
+
+
+# CN's sheet is a straight copy of its published Gulf Export tariff (CN
+# 004050-A8), not a hand-built spread table like the others. All 187 rows go
+# to one destination ("Gulf Exports Group"); rate_a-d are the tariff's own
+# rate-column definitions (car size × railway- vs shipper-supplied
+# equipment), and multiple rows per origin are different volume/condition
+# tiers keyed by `notes` (see CN_NOTES below) — e.g. note "4" = 105+ car
+# blocks, matching the existing "CN 105s" bid market; note "1" = 25-49 cars,
+# matching "CN 25's". Kolten (2026-08-26): upload the raw rates only for
+# now — no bu/car figure or FOB netback logic yet; he's still sorting out
+# the basis side, which will reference Corn CIF NOLA from the River FOB
+# Portal rather than a rail_fob bid market like CSX/NS/BN use.
+CN_NOTES = {
+    "1": "Car blocks of 25 to 49 cars",
+    "2": "Excludes reciprocal switch at origin",
+    "3": "Car blocks of 50 to 104 cars",
+    "4": "Car blocks of 105 cars or greater",
+    "5": "Not subject to AAR Rule 11 billing at origin",
+    "6": "USD, collect (invoiced by destination carrier)",
+    "7": "Subject to AAR Rule 11 billing at origin",
+    "8": "Includes reciprocal switch at origin, up to $139/car",
+    "9": "Car blocks of 50 to 84 cars",
+    "10": "Car blocks of 85 cars or more",
+}
+# Kolten's relabeling (2026-08-26): the tariff's own "A/B/C/D" + cubic-foot/
+# supplied-by jargon becomes two independent filterable dimensions —
+# car SIZE (Small ≤5149 ft³ vs Large >5149 ft³) and car SOURCE (Railroad-
+# supplied vs Private/shipper-supplied) — since that's what a shipper
+# actually chooses between, not the tariff's letter codes.
+CN_SIZES = {"Small": "≤5149 ft³", "Large": ">5149 ft³"}
+CN_SOURCES = {"Railroad": "railway-supplied equipment", "Private": "shipper-supplied equipment"}
+CN_RATE_FIELD = {
+    ("Small", "Railroad"): "rate_a",
+    ("Large", "Railroad"): "rate_b",
+    ("Small", "Private"):  "rate_c",
+    ("Large", "Private"):  "rate_d",
+}
+
+
+def load_cn():
+    """[{origin, state, destination, rate_a, rate_b, rate_c, rate_d, notes}]
+    All in $/car, exactly as published in the tariff — no ¢/bu conversion
+    yet (no confirmed bu/car figure for CN), no FOB calc."""
+    return _load("cn_freight_seed.json")

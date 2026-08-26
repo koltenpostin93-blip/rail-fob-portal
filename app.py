@@ -13,7 +13,9 @@ Three top-level tabs keep the raw bid boards separate from the CSX/NS origin
 economics, instead of one long mixed scroll.
 """
 import base64
+import json
 import os
+import re
 from collections import Counter
 
 import streamlit as st
@@ -60,6 +62,54 @@ LOGO_URI = _asset_uri("logo-full.png")
 JPSI_DARK = "#32373c"
 JPSI_BLUE = "#0693e3"
 
+# Table-only styling, factored out so the copy/PNG capture (which runs in an
+# isolated components.html iframe with no access to the page's own
+# stylesheet) can inject the exact same rules rather than drifting from a
+# second hand-maintained copy.
+_TABLE_CSS = f"""
+  table.sheet {{ width: 100%; border-collapse: collapse; font-size: 0.85rem;
+    font-family: 'Source Sans Pro', system-ui, -apple-system, sans-serif; }}
+  table.sheet th, table.sheet td {{ font-variant-numeric: tabular-nums; }}
+  table.sheet th {{
+    font-size: 0.68rem; font-weight: 700; color: #6b7280; text-transform: uppercase;
+    letter-spacing: .03em; padding: 7px 10px; border-bottom: 2px solid #e2e8f0;
+    text-align: right; white-space: nowrap;
+  }}
+  table.sheet th.lblhdr {{ text-align: left; }}
+  table.sheet td {{
+    padding: 6px 10px; text-align: right; border-bottom: 1px solid #f5f5f5;
+    color: #333; white-space: nowrap;
+  }}
+  table.sheet tr.section td {{
+    background: #f0f0f0; color: {JPSI_DARK}; font-weight: 700;
+    padding: 7px 16px; border-top: 1px solid #ddd; border-bottom: none;
+    font-size: 0.75rem; text-transform: uppercase; letter-spacing: .04em;
+    text-align: left;
+  }}
+  table.sheet tr.origin-hdr td {{
+    padding: 10px 10px 4px 10px; border-bottom: none; font-weight: 700;
+    color: {JPSI_DARK}; text-align: left;
+  }}
+  table.sheet td.lbl {{ text-align: left; font-weight: 600; color: #2c3e50; }}
+  table.sheet td.sub-lbl {{
+    text-align: left; color: #6b7280; padding-left: 26px; font-style: italic;
+  }}
+  table.sheet td.up {{ background: #e8f5e9; color: #1f2328; font-weight: 700; }}
+  table.sheet td.down {{ background: #ffebee; color: #1f2328; font-weight: 700; }}
+  table.sheet td.better {{ background: #eaf4fc; color: {JPSI_DARK}; font-weight: 700; }}
+  table.sheet td.pending {{ color: #94a3b8; }}
+  table.sheet .off {{ color: {JPSI_BLUE}; font-weight: 600; }}
+  .fut-sub {{ font-size: 0.68rem; color: #9aa5b1; font-weight: 400; }}
+  .rail-chip {{
+    font-size: 9px; color: #fff; padding: 2px 7px; border-radius: 8px;
+    margin-left: 6px; font-weight: 700;
+  }}
+  .asof-chip {{
+    font-size: 9px; color: #fff; background: #d97706; padding: 2px 7px;
+    border-radius: 8px; margin-left: 6px;
+  }}
+"""
+
 st.markdown(
     f"""
     <style>
@@ -68,7 +118,7 @@ st.markdown(
       .stMarkdown, h1, h2, h3, h4, h5, h6, p, span, div {{
         font-family: 'Source Sans Pro', system-ui, -apple-system, sans-serif !important;
       }}
-      table td, table th {{ font-variant-numeric: tabular-nums; }}
+      {_TABLE_CSS}
 
       header[data-testid="stHeader"] {{ display: none !important; }}
       #MainMenu {{ visibility: hidden !important; }}
@@ -107,45 +157,6 @@ st.markdown(
       }}
       .sheet-wrap-inner {{ position: relative; z-index: 1; overflow-x: auto; }}
 
-      table.sheet {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
-      table.sheet th {{
-        font-size: 0.68rem; font-weight: 700; color: #6b7280; text-transform: uppercase;
-        letter-spacing: .03em; padding: 7px 10px; border-bottom: 2px solid #e2e8f0;
-        text-align: right; white-space: nowrap;
-      }}
-      table.sheet th.lblhdr {{ text-align: left; }}
-      table.sheet td {{
-        padding: 6px 10px; text-align: right; border-bottom: 1px solid #f5f5f5;
-        color: #333; white-space: nowrap;
-      }}
-      table.sheet tr.section td {{
-        background: #f0f0f0; color: {JPSI_DARK}; font-weight: 700;
-        padding: 7px 16px; border-top: 1px solid #ddd; border-bottom: none;
-        font-size: 0.75rem; text-transform: uppercase; letter-spacing: .04em;
-        text-align: left;
-      }}
-      table.sheet tr.origin-hdr td {{
-        padding: 10px 10px 4px 10px; border-bottom: none; font-weight: 700;
-        color: {JPSI_DARK}; text-align: left;
-      }}
-      table.sheet td.lbl {{ text-align: left; font-weight: 600; color: #2c3e50; }}
-      table.sheet td.sub-lbl {{
-        text-align: left; color: #6b7280; padding-left: 26px; font-style: italic;
-      }}
-      table.sheet td.up {{ background: #e8f5e9; color: #1f2328; font-weight: 700; }}
-      table.sheet td.down {{ background: #ffebee; color: #1f2328; font-weight: 700; }}
-      table.sheet td.better {{ background: #eaf4fc; color: {JPSI_DARK}; font-weight: 700; }}
-      table.sheet td.pending {{ color: #94a3b8; }}
-      table.sheet .off {{ color: {JPSI_BLUE}; font-weight: 600; }}
-      .fut-sub {{ font-size: 0.68rem; color: #9aa5b1; font-weight: 400; }}
-      .rail-chip {{
-        font-size: 9px; color: #fff; padding: 2px 7px; border-radius: 8px;
-        margin-left: 6px; font-weight: 700;
-      }}
-      .asof-chip {{
-        font-size: 9px; color: #fff; background: #d97706; padding: 2px 7px;
-        border-radius: 8px; margin-left: 6px;
-      }}
       .legend {{ font-size: 0.78rem; color: #6b7280; padding: 4px 2px 14px 2px; }}
       .legend .sw {{
         display: inline-block; width: 11px; height: 11px; border-radius: 3px;
@@ -218,6 +229,71 @@ def _card_open():
 
 def _card_close():
     return '</div></div>'
+
+
+def _table_actions(table_html, filename):
+    """Copy-to-clipboard (rich text) + download-as-PNG buttons for one
+    table's raw `<table>...</table>` HTML (not the card wrapper). Runs in
+    its own components.html iframe, which can't see the page's real
+    stylesheet — so it injects _TABLE_CSS itself rather than depending on
+    it, the same reason basis-tracker's copy_button() needs its own inline
+    styling. PNG capture via html2canvas (CDN); real browser tab, not a
+    sandboxed artifact viewer, so a script-triggered download works fine."""
+    payload = json.dumps(table_html).replace("</", "<\\/")
+    fname = json.dumps(filename)
+    btn_css = (
+        "font-family:'Source Sans Pro',system-ui,sans-serif;font-size:12px;font-weight:600;"
+        f"background:{JPSI_BLUE};color:#fff;border:none;border-radius:6px;"
+        "padding:6px 14px;cursor:pointer;margin-right:8px"
+    )
+    components.html(f"""
+      <style>{_TABLE_CSS}</style>
+      <div>
+        <button id="copy_b" style="{btn_css}">📋 Copy</button>
+        <button id="png_b" style="{btn_css}">⬇ PNG</button>
+        <span id="msg" style="font-family:'Source Sans Pro',system-ui,sans-serif;font-size:12px;
+              color:#16a34a;font-weight:600;margin-left:4px"></span>
+      </div>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+      <script>
+        const H = {payload};
+        const FN = {fname};
+        function showMsg(t) {{
+          const m = document.getElementById('msg');
+          m.textContent = t;
+          setTimeout(() => {{ m.textContent = ''; }}, 1800);
+        }}
+        document.getElementById('copy_b').onclick = function() {{
+          const d = document.createElement('div');
+          d.style.cssText = 'position:fixed;left:-99999px;top:0;';
+          d.innerHTML = H;
+          document.body.appendChild(d);
+          const rg = document.createRange(); rg.selectNodeContents(d);
+          const s = window.getSelection(); s.removeAllRanges(); s.addRange(rg);
+          let ok = false;
+          try {{ ok = document.execCommand('copy'); }} catch (e) {{}}
+          s.removeAllRanges(); document.body.removeChild(d);
+          showMsg(ok ? 'Copied!' : 'Press Ctrl+C');
+        }};
+        document.getElementById('png_b').onclick = function() {{
+          if (typeof html2canvas === 'undefined') {{ showMsg('PNG unavailable'); return; }}
+          const d = document.createElement('div');
+          d.style.cssText = 'position:fixed;left:-99999px;top:0;background:#fff;padding:14px;';
+          d.innerHTML = H;
+          document.body.appendChild(d);
+          html2canvas(d, {{backgroundColor: '#ffffff', scale: 2}}).then(function(canvas) {{
+            const link = document.createElement('a');
+            link.download = FN;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+            document.body.removeChild(d);
+          }}).catch(function() {{
+            showMsg('PNG failed');
+            document.body.removeChild(d);
+          }});
+        }};
+      </script>
+    """, height=44)
 
 
 def _disp(num, raw):
@@ -335,7 +411,7 @@ def _sheet_board(source, sections, key, other_keep=None):
             col_fut[p] = Counter(futs).most_common(1)[0][0] if futs else ""
 
         ncols = 1 + len(periods)
-        html = [_card_open(), '<table class="sheet"><tbody>',
+        html = ['<table class="sheet"><tbody>',
                 f'<tr class="section"><td colspan="{ncols}">{title}</td></tr>',
                 '<tr>', '<th class="lblhdr">Corridor</th>']
         for p in periods:
@@ -361,8 +437,10 @@ def _sheet_board(source, sections, key, other_keep=None):
                 html.append(_cell_html(cells.get(p), prior))
             html.append('</tr>')
         html.append('</tbody></table>')
-        html.append(_card_close())
-        st.markdown(''.join(html), unsafe_allow_html=True)
+        table_html = ''.join(html)
+        st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+        fname = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_") or "corridors"
+        _table_actions(table_html, f"bids_{key}_{fname}.png")
 
     st.markdown(
         f'<div class="legend">As of {sel_date} · a corridor not posted that day carries '
@@ -477,7 +555,7 @@ def _raw_corridor_table(markets, sel_date):
         st.caption("No postings on or before this date yet.")
         return
     periods = _period_union(*[e[2] for e in entries])
-    html = [_card_open(), '<table class="sheet"><tbody><tr>', '<th class="lblhdr">Corridor</th>']
+    html = ['<table class="sheet"><tbody><tr>', '<th class="lblhdr">Corridor</th>']
     html += [f'<th>{p}</th>' for p in periods]
     html.append('</tr>')
     for m, eff, cells, prior in entries:
@@ -494,8 +572,10 @@ def _raw_corridor_table(markets, sel_date):
             html.append(_cell_html(cells.get(p), prior))
         html.append('</tr>')
     html.append('</tbody></table>')
-    html.append(_card_close())
-    st.markdown(''.join(html), unsafe_allow_html=True)
+    table_html = ''.join(html)
+    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+    fname = re.sub(r"[^a-z0-9]+", "_", "_".join(markets).lower()).strip("_")
+    _table_actions(table_html, f"rail_fob_{fname}.png")
 
 
 def _state_best_row(origins, cells, field, periods):
@@ -516,7 +596,7 @@ def _state_best_row(origins, cells, field, periods):
 
 
 def _state_fob_table(rows, variant_fields, bid_cells_map, periods, state_key="state",
-                      per_variant=False):
+                      per_variant=False, name="state_index"):
     """One row per state, one column per period. Each cell is the BEST
     (highest) FOB among every origin in that state for that corridor/region
     — an index, not any single origin's actual number.
@@ -538,7 +618,7 @@ def _state_fob_table(rows, variant_fields, bid_cells_map, periods, state_key="st
         return
 
     ncols = 1 + len(periods)
-    html = [_card_open(), '<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
+    html = ['<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
     html += [f'<th>{p}</th>' for p in periods]
     html.append('</tr>')
     for s in sorted(by_state):
@@ -558,8 +638,9 @@ def _state_fob_table(rows, variant_fields, bid_cells_map, periods, state_key="st
             cells = ''.join(f'<td>{round(v):+d}</td>' if v is not None else '<td>—</td>' for v in vals)
             html.append(f'<tr><td class="lbl">{s}</td>{cells}</tr>')
     html.append('</tbody></table>')
-    html.append(_card_close())
-    st.markdown(''.join(html), unsafe_allow_html=True)
+    table_html = ''.join(html)
+    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+    _table_actions(table_html, f"{name}.png")
     if per_variant:
         st.caption("Best (highest) FOB among every origin in that state, per corridor, per "
                    "period — blue = the better corridor for that state/period, same "
@@ -597,7 +678,8 @@ def _csx_tab(sel_date):
     variant_fields = ([("Columbus", "columbus_cpb")] if show_col else []) + \
                       ([("Evansville", "eville_altkyla_cpb")] if show_evv else [])
     bid_cells_map = {"Columbus": col_cells, "Evansville": evv_cells}
-    _state_fob_table(rows, variant_fields, bid_cells_map, periods, per_variant=True)
+    _state_fob_table(rows, variant_fields, bid_cells_map, periods, per_variant=True,
+                      name="csx_state_index")
 
     st.markdown("### Highlighted Origins")
     if asof_bits:
@@ -605,7 +687,7 @@ def _csx_tab(sel_date):
     highlighted = [r for r in rows if r["highlighted"]]
     if periods and highlighted:
         ncols = 1 + len(periods)
-        html = [_card_open()] + _origin_table_open(periods, ncols)
+        html = _origin_table_open(periods, ncols)
         flagged = []
         for r in highlighted:
             variants = []
@@ -623,8 +705,9 @@ def _csx_tab(sel_date):
             )
             html.extend(_fob_variant_rows(variants, periods))
         html.append('</tbody></table>')
-        html.append(_card_close())
-        st.markdown(''.join(html), unsafe_allow_html=True)
+        table_html = ''.join(html)
+        st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+        _table_actions(table_html, "csx_highlighted_origins.png")
         if flagged:
             notes = "; ".join(f"{n} (GA/FL {g:+.1f}¢ vs AL/TN/KY/LA {a:+.1f}¢ used)"
                                for n, g, a in flagged)
@@ -641,6 +724,7 @@ def _csx_tab(sel_date):
                 ("Type", lambda r: r["train_type"]),
             ],
             variants=[("Columbus", "columbus_cpb", show_col), ("Evansville", "eville_altkyla_cpb", show_evv)],
+            name="csx_all_origins",
         )
 
     st.markdown(
@@ -674,7 +758,7 @@ def _ns_tab(sel_date):
     st.markdown("### FOB Index by State")
     variant_fields = [(region, field + "_cpb") for region, field in active]
     bid_cells_map = {region: ftw_cells for region, _ in active}
-    _state_fob_table(rows, variant_fields, bid_cells_map, periods)
+    _state_fob_table(rows, variant_fields, bid_cells_map, periods, name="ns_state_index")
 
     st.markdown("### Highlighted Origins")
     if ftw_eff and ftw_eff != sel_date:
@@ -682,7 +766,7 @@ def _ns_tab(sel_date):
     highlighted = [r for r in rows if r["highlighted"]]
     if periods and highlighted:
         ncols = 1 + len(periods)
-        html = [_card_open()] + _origin_table_open(periods, ncols)
+        html = _origin_table_open(periods, ncols)
         for r in highlighted:
             variants = [(region, ftw_cells, r[f"{field}_cpb"]) for region, field in active]
             # All three regions net against the SAME NS Ft Wayne bid, so the
@@ -697,8 +781,9 @@ def _ns_tab(sel_date):
             )
             html.extend(_fob_variant_rows([best], periods))
         html.append('</tbody></table>')
-        html.append(_card_close())
-        st.markdown(''.join(html), unsafe_allow_html=True)
+        table_html = ''.join(html)
+        st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+        _table_actions(table_html, "ns_highlighted_origins.png")
     else:
         st.caption(f"No {FD.NS_BID_MARKET} postings on or before this date yet.")
 
@@ -708,6 +793,7 @@ def _ns_tab(sel_date):
             label_cols=[("Origin", lambda r: r["origin"]),
                         ("105-car", lambda r: "Y" if r["flag_105"] else "")],
             variants=[(region, field + "_cpb", show[field]) for region, field in FD.NS_REGIONS.items()],
+            name="ns_all_origins",
         )
 
     st.markdown(
@@ -852,7 +938,7 @@ def _bn_tab(sel_date):
         for r in rows:
             by_state.setdefault(r["state"], []).append(r)
         ncols = 1 + len(index_periods)
-        html = [_card_open(), '<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
+        html = ['<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
         html += [f'<th>{p}</th>' for p in index_periods]
         html.append('</tr>')
         for s in sorted(by_state):
@@ -862,8 +948,9 @@ def _bn_tab(sel_date):
             html.append(f'<tr class="origin-hdr"><td colspan="{ncols}">{s}</td></tr>')
             html.extend(_variant_value_rows(label_rows, cell_fn=_fob_cell_int))
         html.append('</tbody></table>')
-        html.append(_card_close())
-        st.markdown(''.join(html), unsafe_allow_html=True)
+        table_html = ''.join(html)
+        st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+        _table_actions(table_html, "bn_state_index.png")
         st.caption("Best (highest) FOB among every origin in that state, per destination, per "
                    "one of the 4 clean months — FH/LH splits and packages (Split Nov, OND, "
                    "etc.) are folded into these columns rather than listed separately (see "
@@ -876,7 +963,7 @@ def _bn_tab(sel_date):
         st.caption(" · ".join(asof_bits))
     if periods:
         ncols = 1 + len(periods)
-        html = [_card_open()] + _origin_table_open(periods, ncols)
+        html = _origin_table_open(periods, ncols)
         for r in rows:
             label_rows = [(dest, _bn_variant_row(cells_by_dest[dest], r[spec["field"] + "_cpb"], periods))
                           for dest, spec in active]
@@ -886,8 +973,9 @@ def _bn_tab(sel_date):
             )
             html.extend(_variant_value_rows(label_rows))
         html.append('</tbody></table>')
-        html.append(_card_close())
-        st.markdown(''.join(html), unsafe_allow_html=True)
+        table_html = ''.join(html)
+        st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+        _table_actions(table_html, "bn_origins.png")
     else:
         st.caption("No BN PNW/Hereford postings on or before this date yet.")
 
@@ -909,7 +997,69 @@ def _bn_tab(sel_date):
     )
 
 
-def _expanded_freight_table(rows, state_key, label_cols, variants):
+_CN_LETTER = {v: k[-1].upper() for k, v in FD.CN_RATE_FIELD.items()}
+
+
+def _cn_tab():
+    st.caption("Raw CN Gulf Export tariff rates (Supplement 41 to Tariff CN 004050-A8) — "
+               "reference only for now. No ¢/bu conversion or FOB calc yet — Kolten's still "
+               "working out the basis side, which will reference Corn CIF NOLA from the "
+               "River FOB Portal rather than a rail_fob bid market.")
+
+    sc, pc = st.columns(2)
+    with sc:
+        st.caption("Car size")
+        sizes = [s for s in FD.CN_SIZES if st.checkbox(f"{s} ({FD.CN_SIZES[s]})", value=True,
+                                                          key=f"cn_size_{s}")]
+    with pc:
+        st.caption("Car source")
+        sources = [s for s in FD.CN_SOURCES if st.checkbox(f"{s} ({FD.CN_SOURCES[s]})", value=True,
+                                                              key=f"cn_src_{s}")]
+    active_cols = [(size, source, FD.CN_RATE_FIELD[(size, source)])
+                   for size in sizes for source in sources]
+    if not active_cols:
+        st.info("Select at least one car size and one car source to filter on.")
+        return
+
+    rows = FD.load_cn()
+    states = sorted({r["state"] for r in rows})
+    sel_states = st.multiselect("Filter by state", states, default=states, key="cn_states")
+    filtered = sorted((r for r in rows if r["state"] in sel_states),
+                       key=lambda r: (r["state"], r["origin"]))
+
+    html = ['<table class="sheet"><tbody><tr>',
+            '<th class="lblhdr">State</th>', '<th class="lblhdr">Origin</th>']
+    html += [f'<th>{size}<br><span class="fut-sub">{source}</span></th>' for size, source, _ in active_cols]
+    html.append('<th class="lblhdr">Notes</th></tr>')
+
+    def _rate_cell(r, field):
+        v = r[field]
+        letter = _CN_LETTER[field]
+        mark = ' <span class="fut-sub">(C)</span>' if letter.lower() in (r.get("changed") or ()) else ''
+        return f'<td>{v:,.0f}{mark}</td>'
+
+    for r in filtered:
+        html.append(
+            f'<tr><td class="lbl">{r["state"]}</td><td class="lbl">{r["origin"]}</td>'
+            + ''.join(_rate_cell(r, field) for _, _, field in active_cols)
+            + f'<td class="lbl">{r["notes"] or ""}</td></tr>'
+        )
+    html.append('</tbody></table>')
+    table_html = ''.join(html)
+    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+    _table_actions(table_html, "cn_rates.png")
+    st.caption(f"{len(filtered)} of {len(rows)} rate rows shown ($/car). All rows currently "
+               "go to Gulf Exports Group — multiple rows per origin are different volume/"
+               "condition tiers, not different destinations. (C) = tariff-flagged as "
+               "recently changed.")
+
+    with st.expander("Note codes"):
+        st.markdown(
+            "  \n".join(f"**{k}** — {v}" for k, v in FD.CN_NOTES.items())
+        )
+
+
+def _expanded_freight_table(rows, state_key, label_cols, variants, name="all_origins"):
     """Sortable reference table: one row per origin, one column per active
     freight variant (¢/bu), ranked cheapest-first across whichever variants
     are active. `variants`: [(label, cpb_field, is_active), ...]."""
@@ -922,7 +1072,7 @@ def _expanded_freight_table(rows, state_key, label_cols, variants):
         return min(r[f] for _, f in active)
 
     ordered = sorted(rows, key=sort_key)
-    html = [_card_open(), '<table class="sheet"><tbody><tr>',
+    html = ['<table class="sheet"><tbody><tr>',
             '<th class="lblhdr">State</th>']
     html += [f'<th class="lblhdr">{lbl}</th>' for lbl, _ in label_cols]
     html += [f'<th>{lbl} ¢/bu</th>' for lbl, _ in active]
@@ -938,8 +1088,9 @@ def _expanded_freight_table(rows, state_key, label_cols, variants):
             cells.append(f'<td class="lbl">{best_lbl}</td>')
         html.append('<tr>' + ''.join(cells) + '</tr>')
     html.append('</tbody></table>')
-    html.append(_card_close())
-    st.markdown(''.join(html), unsafe_allow_html=True)
+    table_html = ''.join(html)
+    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+    _table_actions(table_html, f"{name}.png")
     st.caption(f"{len(ordered)} locations, ranked cheapest freight first.")
 
 
@@ -974,7 +1125,7 @@ def _map_tab():
 
 def _references_tab():
     st.markdown("### Reference Links")
-    html = [_card_open(), '<table class="sheet"><tbody>']
+    html = ['<table class="sheet"><tbody>']
     for label, url in REFERENCES:
         html.append(
             f'<tr><td class="lbl" style="white-space:normal">'
@@ -982,12 +1133,13 @@ def _references_tab():
             f'<br><span class="fut-sub">{url}</span></td></tr>'
         )
     html.append('</tbody></table>')
-    html.append(_card_close())
-    st.markdown(''.join(html), unsafe_allow_html=True)
+    table_html = ''.join(html)
+    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+    _table_actions(table_html, "reference_links.png")
 
 
-bids_tab, csx_tab, ns_tab, bn_tab, map_tab, refs_tab = st.tabs(
-    ["📋 Bids", "🚂 CSX", "🚂 NS", "🚂 BN", "🗺️ Map", "🔗 References"])
+bids_tab, csx_tab, ns_tab, bn_tab, cn_tab, map_tab, refs_tab = st.tabs(
+    ["📋 Bids", "🚂 CSX", "🚂 NS", "🚂 BN", "🚂 CN", "🗺️ Map", "🔗 References"])
 
 with bids_tab:
     st.markdown("### Manual Rail Corridors (chat-fed)")
@@ -1001,6 +1153,9 @@ with ns_tab:
 
 with bn_tab:
     _bn_tab(_manual_date)
+
+with cn_tab:
+    _cn_tab()
 
 with map_tab:
     _map_tab()
