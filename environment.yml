@@ -11,3 +11,8 @@ dependencies:
   - python=3.11
   - streamlit
   - psycopg2
+  - pandas
+  - numpy
+  - pyarrow
+  - plotly
+  - requests
