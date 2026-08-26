@@ -1052,14 +1052,21 @@ def _cn_tab():
 
     rows = FD.load_cn()
     states = sorted({r["state"] for r in rows})
-    sel_states = st.multiselect("Filter by state", states, default=states, key="cn_states")
-    filtered = sorted((r for r in rows if r["state"] in sel_states),
-                       key=lambda r: (r["state"], r["origin"]))
+    tier_order = FD.CN_VOLUME_TIER_ORDER
+    tiers = sorted({r["tier"] for r in rows if r["tier"]}, key=tier_order.index)
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        sel_states = st.multiselect("Filter by state", states, default=states, key="cn_states")
+    with fc2:
+        sel_tiers = st.multiselect("Filter by volume tier", tiers, default=tiers, key="cn_tiers")
+    filtered = sorted((r for r in rows if r["state"] in sel_states and r["tier"] in sel_tiers),
+                       key=lambda r: (r["state"], r["origin"], tier_order.index(r["tier"])))
 
     html = ['<table class="sheet"><tbody><tr>',
-            '<th class="lblhdr">State</th>', '<th class="lblhdr">Origin</th>']
+            '<th class="lblhdr">State</th>', '<th class="lblhdr">Origin</th>',
+            '<th class="lblhdr">Volume Tier</th>']
     html += [f'<th>{size}<br><span class="fut-sub">{source}</span></th>' for size, source, _ in active_cols]
-    html.append('<th class="lblhdr">Notes</th></tr>')
+    html.append('</tr>')
 
     def _rate_cell(r, field):
         v = r[field]
@@ -1068,19 +1075,23 @@ def _cn_tab():
         return f'<td>{v:,.0f}{mark}</td>'
 
     for r in filtered:
+        switch_mark = ' <span class="fut-sub">⇄ recip. switch</span>' if r["switch"] else ''
         html.append(
             f'<tr><td class="lbl">{r["state"]}</td><td class="lbl">{r["origin"]}</td>'
+            f'<td class="lbl">{r["tier"] or r["notes"] or ""}'
+            f'<span class="fut-sub"> ({r["notes"] or "—"})</span>{switch_mark}</td>'
             + ''.join(_rate_cell(r, field) for _, _, field in active_cols)
-            + f'<td class="lbl">{r["notes"] or ""}</td></tr>'
+            + '</tr>'
         )
     html.append('</tbody></table>')
     table_html = ''.join(html)
     st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
     _table_actions(table_html, "cn_rates.png")
     st.caption(f"{len(filtered)} of {len(rows)} rate rows shown ($/car). All rows currently "
-               "go to Gulf Exports Group — multiple rows per origin are different volume/"
-               "condition tiers, not different destinations. (C) = tariff-flagged as "
-               "recently changed.")
+               "go to Gulf Exports Group — multiple rows per origin are different volume "
+               "tiers, not different destinations. (C) = tariff-flagged as recently changed. "
+               "⇄ recip. switch = this rate includes a reciprocal switch at origin (up to "
+               "$139/car) — most rows exclude it, this just flags the ones that don't.")
 
     with st.expander("Note codes"):
         st.markdown(
@@ -1104,9 +1115,10 @@ def _cn_tab():
         variants = [(f"{size} · {source}", r[f"{field}_cpb"]) for size, source, field in active_cols]
         label_rows = [(lbl, [None if cif.get(m) is None else cif[m] - frt for m in months])
                       for lbl, frt in variants]
+        switch_mark = ' <span class="fut-sub">⇄ recip. switch</span>' if r["switch"] else ''
         html.append(
             f'<tr class="origin-hdr"><td colspan="{ncols}">{r["state"]} · {r["origin"]}'
-            f'<span class="fut-sub"> &nbsp;{r["notes"] or ""}</span></td></tr>'
+            f'<span class="fut-sub"> &nbsp;{r["tier"] or r["notes"] or ""}</span>{switch_mark}</td></tr>'
         )
         html.extend(_variant_value_rows(label_rows))
     html.append('</tbody></table>')

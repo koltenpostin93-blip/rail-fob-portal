@@ -192,16 +192,55 @@ CN_RATE_FIELD = {
     ("Large", "Private"):  "rate_d",
 }
 
+# The real reason an origin has multiple rows: every row goes to the SAME
+# destination (all 187 are "Gulf Exports Group" — confirmed, not a filter
+# worth having) but at a different shipment-volume tier. Kolten's follow-up
+# (2026-08-26): only 3 tiers matter for filtering/highlighting, not 5 — codes
+# 3 ("50-104 cars", 41 rows) and 9 ("50-84 cars", 1 row) never both appear on
+# the same origin, so they're folded into one mid tier (labeled by the
+# dominant code, 3); same for 4 ("105+", 52 rows) and 10 ("85+", 1 row).
+CN_VOLUME_TIERS = {
+    "1":  "25-49 cars",
+    "3":  "50-104 cars",
+    "9":  "50-104 cars",
+    "4":  "105+ cars",
+    "10": "105+ cars",
+}
+CN_VOLUME_TIER_ORDER = ["25-49 cars", "50-104 cars", "105+ cars"]
+
+
+def cn_volume_tier(notes):
+    """The volume-tier label for a row's `notes` string, or None if it
+    carries none of the tier codes."""
+    if not notes:
+        return None
+    codes = notes.split("-")
+    for code in codes:
+        if code in CN_VOLUME_TIERS:
+            return CN_VOLUME_TIERS[code]
+    return None
+
+
+def cn_has_reciprocal_switch(notes):
+    """True if this row's rate INCLUDES a reciprocal switch at origin (note
+    code 8, up to $139/car) — the exception worth flagging. Code 2 (excludes
+    reciprocal switch) is the default on nearly every row and isn't worth
+    calling out. Informational only — Kolten asked for this as a note, not
+    another filter."""
+    return bool(notes) and "8" in notes.split("-")
+
 
 def load_cn():
     """[{origin, state, destination, rate_a, rate_b, rate_c, rate_d, notes,
-         rate_a_cpb, rate_b_cpb, rate_c_cpb, rate_d_cpb}]
+         tier, switch, rate_a_cpb, rate_b_cpb, rate_c_cpb, rate_d_cpb}]
     a/c fields are $/car and ¢/bu for Small cars, b/d for Large — see
     CN_BU_PER_CAR below for the bushel figures behind the conversion."""
     rows = _load("cn_freight_seed.json")
     for r in rows:
         for (size, _source), field in CN_RATE_FIELD.items():
             r[f"{field}_cpb"] = r[field] / CN_BU_PER_CAR[size] * 100
+        r["tier"] = cn_volume_tier(r["notes"])
+        r["switch"] = cn_has_reciprocal_switch(r["notes"])
     return rows
 
 
