@@ -1035,6 +1035,47 @@ def _bn_tab(sel_date):
 _CN_LETTER = {v: k[-1].upper() for k, v in FD.CN_RATE_FIELD.items()}
 
 
+def _cn_state_fob_table(filtered, cif, months, active_cols, commodity):
+    """One row per state per active car size/source variant, one column per
+    CIF month — best (highest) FOB among every origin/volume-tier in that
+    state for that variant. Mirrors CSX's per-variant FOB Index by State
+    (_state_fob_table above), but built against CN's CIF-month columns and
+    per-row size/source freight instead of a period-keyed bid market."""
+    by_state = {}
+    for r in filtered:
+        by_state.setdefault(r["state"], []).append(r)
+    if not by_state:
+        st.caption("No data to index by state yet.")
+        return
+
+    ncols = 1 + len(months)
+    html = ['<table class="sheet"><tbody><tr>', '<th class="lblhdr">State</th>']
+    html += [f'<th>{m}</th>' for m in months]
+    html.append('</tr>')
+    for s in sorted(by_state):
+        rows_s = by_state[s]
+        label_rows = []
+        for size, source, field in active_cols:
+            vals = []
+            for m in months:
+                base = cif.get(m)
+                if base is None:
+                    vals.append(None)
+                    continue
+                best = max(base - FD.cn_freight_cpb(r[field], size, commodity) for r in rows_s)
+                vals.append(best)
+            label_rows.append((f"{size} · {source}", vals))
+        html.append(f'<tr class="origin-hdr"><td colspan="{ncols}">{s}</td></tr>')
+        html.extend(_variant_value_rows(label_rows))
+    html.append('</tbody></table>')
+    table_html = ''.join(html)
+    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+    _table_actions(table_html, "cn_state_index.png")
+    st.caption("Best (highest) FOB among every origin/volume-tier in that state, per car "
+               "size/source, per CIF month — an index, not any single origin's actual "
+               "number. Blue = the better size/source for that state/month.")
+
+
 def _cn_tab():
     st.caption("Raw CN Gulf Export tariff rates (Supplement 41 to Tariff CN 004050-A8), plus "
                "a FOB netback against CIF NOLA from the River FOB Portal — CN's freight "
@@ -1072,6 +1113,66 @@ def _cn_tab():
     filtered = sorted((r for r in rows if r["state"] in sel_states and r["tier"] in sel_tiers),
                        key=lambda r: (r["state"], r["origin"], tier_order.index(r["tier"])))
 
+    # ── FOB (CIF netback) sections up top; the raw tariff table moves to the
+    # bottom for reference — Kolten's call, 2026-08-26: the FOB values are
+    # what's actually used day to day, the raw $/car rates are backup detail.
+    cif_error = None
+    as_of, cif, months = None, {}, []
+    if not RVD.configured():
+        cif_error = ("RIVER_DATABASE_URL isn't set, so this can't reach the River FOB Portal's "
+                     "CIF NOLA archive yet. Add it to `.env` locally or as a Streamlit secret.")
+    else:
+        try:
+            as_of, cif = RVD.latest_cif(commodity)
+        except Exception as e:
+            cif_error = f"Couldn't reach the River FOB Portal's database: {e}"
+        else:
+            if not as_of or not cif:
+                cif_error = f"No {commodity} CIF NOLA history found in the River FOB Portal's archive yet."
+            else:
+                months = sorted(cif, key=RVD.month_sort_key)
+
+    st.markdown(f"### {commodity} FOB Index by State")
+    if cif_error:
+        st.info(cif_error)
+    else:
+        _cn_state_fob_table(filtered, cif, months, active_cols, commodity)
+
+    st.markdown(f"### {commodity} FOB by Origin")
+    if cif_error:
+        st.info(cif_error)
+    else:
+        ncols = 1 + len(months)
+        html = _origin_table_open(months, ncols)
+        for r in filtered:
+            variants = [(f"{size} · {source}", FD.cn_freight_cpb(r[field], size, commodity))
+                        for size, source, field in active_cols]
+            label_rows = [(lbl, [None if cif.get(m) is None else cif[m] - frt for m in months])
+                          for lbl, frt in variants]
+            switch_mark = ' <span class="fut-sub">⇄ recip. switch</span>' if r["switch"] else ''
+            html.append(
+                f'<tr class="origin-hdr"><td colspan="{ncols}">{r["state"]} · {r["origin"]}'
+                f'<span class="fut-sub"> &nbsp;{r["tier"] or r["notes"] or ""}</span>{switch_mark}</td></tr>'
+            )
+            html.extend(_variant_value_rows(label_rows))
+        html.append('</tbody></table>')
+        table_html = ''.join(html)
+        st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
+        _table_actions(table_html, "cn_fob.png")
+        bpc = FD.CN_BU_PER_CAR[commodity]
+        soy_note = (' (derived from the same car\'s weight capacity as corn, ÷60 lb/bu instead of 56)'
+                    if commodity == "Soybeans" else '')
+        st.markdown(
+            f'<div class="legend">FOB(origin) = {commodity} CIF NOLA (as of {as_of}, River FOB '
+            'Portal) − rail freight (¢/bu = $/car ÷ bu/car). Bu/car is by car SIZE only — '
+            f'{bpc["Small"]:,} bu for Small (≤5149 ft³), {bpc["Large"]:,} bu for Large '
+            f'(>5149 ft³){soy_note} — railroad- vs private-supplied doesn\'t change how many '
+            'bushels physically fit. One column per CIF delivery month currently archived; blue = '
+            'the better car size/source for that origin/month.</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("### Raw CN Gulf Export Rates")
     html = ['<table class="sheet"><tbody><tr>',
             '<th class="lblhdr">State</th>', '<th class="lblhdr">Origin</th>',
             '<th class="lblhdr">Volume Tier</th>']
@@ -1109,51 +1210,6 @@ def _cn_tab():
         st.markdown(
             "  \n".join(f"**{k}** — {v}" for k, v in FD.CN_NOTES.items())
         )
-
-    st.markdown(f"### {commodity} FOB by Origin")
-    if not RVD.configured():
-        st.info("RIVER_DATABASE_URL isn't set, so this can't reach the River FOB Portal's "
-                 "CIF NOLA archive yet. Add it to `.env` locally or as a Streamlit secret.")
-        return
-    try:
-        as_of, cif = RVD.latest_cif(commodity)
-    except Exception as e:
-        st.error(f"Couldn't reach the River FOB Portal's database: {e}")
-        return
-    if not as_of or not cif:
-        st.caption(f"No {commodity} CIF NOLA history found in the River FOB Portal's archive yet.")
-        return
-    months = sorted(cif, key=RVD.month_sort_key)
-
-    ncols = 1 + len(months)
-    html = _origin_table_open(months, ncols)
-    for r in filtered:
-        variants = [(f"{size} · {source}", FD.cn_freight_cpb(r[field], size, commodity))
-                    for size, source, field in active_cols]
-        label_rows = [(lbl, [None if cif.get(m) is None else cif[m] - frt for m in months])
-                      for lbl, frt in variants]
-        switch_mark = ' <span class="fut-sub">⇄ recip. switch</span>' if r["switch"] else ''
-        html.append(
-            f'<tr class="origin-hdr"><td colspan="{ncols}">{r["state"]} · {r["origin"]}'
-            f'<span class="fut-sub"> &nbsp;{r["tier"] or r["notes"] or ""}</span>{switch_mark}</td></tr>'
-        )
-        html.extend(_variant_value_rows(label_rows))
-    html.append('</tbody></table>')
-    table_html = ''.join(html)
-    st.markdown(_card_open() + table_html + _card_close(), unsafe_allow_html=True)
-    _table_actions(table_html, "cn_fob.png")
-    bpc = FD.CN_BU_PER_CAR[commodity]
-    soy_note = (' (derived from the same car\'s weight capacity as corn, ÷60 lb/bu instead of 56)'
-                if commodity == "Soybeans" else '')
-    st.markdown(
-        f'<div class="legend">FOB(origin) = {commodity} CIF NOLA (as of {as_of}, River FOB '
-        'Portal) − rail freight (¢/bu = $/car ÷ bu/car). Bu/car is by car SIZE only — '
-        f'{bpc["Small"]:,} bu for Small (≤5149 ft³), {bpc["Large"]:,} bu for Large '
-        f'(>5149 ft³){soy_note} — railroad- vs private-supplied doesn\'t change how many '
-        'bushels physically fit. One column per CIF delivery month currently archived; blue = '
-        'the better car size/source for that origin/month.</div>',
-        unsafe_allow_html=True,
-    )
 
 
 def _expanded_freight_table(rows, state_key, label_cols, variants, name="all_origins"):
