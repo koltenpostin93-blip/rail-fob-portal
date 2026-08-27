@@ -34,7 +34,8 @@ def configured() -> bool:
 def _conn():
     import psycopg2
     import psycopg2.extras
-    return psycopg2.connect(_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+    return psycopg2.connect(_url(), cursor_factory=psycopg2.extras.RealDictCursor,
+                             connect_timeout=10)
 
 
 def month_sort_key(label):

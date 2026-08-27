@@ -1115,7 +1115,11 @@ def _cn_tab():
         st.info("RIVER_DATABASE_URL isn't set, so this can't reach the River FOB Portal's "
                  "CIF NOLA archive yet. Add it to `.env` locally or as a Streamlit secret.")
         return
-    as_of, cif = RVD.latest_cif(commodity)
+    try:
+        as_of, cif = RVD.latest_cif(commodity)
+    except Exception as e:
+        st.error(f"Couldn't reach the River FOB Portal's database: {e}")
+        return
     if not as_of or not cif:
         st.caption(f"No {commodity} CIF NOLA history found in the River FOB Portal's archive yet.")
         return
