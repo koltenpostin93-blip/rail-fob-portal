@@ -24,7 +24,14 @@ _MONTH_ORDER = ["June", "July", "Aug", "Sep", "Oct", "Nov", "Dec",
 
 
 def _url() -> str:
-    return os.environ.get("RIVER_DATABASE_URL", "").strip()
+    env_val = os.environ.get("RIVER_DATABASE_URL", "").strip()
+    if env_val:
+        return env_val
+    try:
+        import _snowflake
+        return (_snowflake.get_generic_secret_string("RIVER_DATABASE_URL") or "").strip()
+    except ImportError:
+        return ""   # not running inside Snowflake — no secret to fall back to
 
 
 def configured() -> bool:

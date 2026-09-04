@@ -1421,6 +1421,12 @@ def _shipments_tab():
         st.caption("KCS reported as a national total only (no state breakdown).")
 
     _secret_token = os.environ.get("USDA_APP_TOKEN", "")
+    if not _secret_token:
+        try:
+            import _snowflake
+            _secret_token = (_snowflake.get_generic_secret_string("USDA_APP_TOKEN") or "").strip()
+        except ImportError:
+            pass  # not running inside Snowflake — fine, this secret is optional anyway
     effective_token = token or _secret_token
 
     if st.session_state.get("ship_force_api"):
